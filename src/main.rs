@@ -1,6 +1,6 @@
 use std::{collections::HashSet, sync::Arc};
 
-use egui::{vec2, Color32, Layout, Vec2};
+use egui::{vec2, Align2, Color32, Layout, Vec2};
 use rand::Rng;
 
 const SUDOKU_SIZE: f32 = 40. * 11. - 20.;
@@ -9,20 +9,34 @@ const SUDOKU_SIZE: f32 = 40. * 11. - 20.;
 #[serde(default)] // if we add new fields, give them default values when deserializing old state
 pub struct SudokuApp {
     #[serde(skip)]
-    sudoku_grid: Vec<Vec<String>>,
+    puzzle: Vec<Vec<String>>,
+    solution: Vec<Vec<String>>,
 
-    sudoku_solution: Vec<Vec<String>>,
     hints: bool,
+    difficulty: Difficulty,
+
+    #[serde(skip)]
+    display_results: bool,
 }
 
 impl Default for SudokuApp {
     fn default() -> Self {
         Self {
-            sudoku_grid: vec![vec![String::default(); 9]; 9],
-            sudoku_solution: vec![vec![String::default(); 9]; 9],
+            puzzle: vec![vec![String::default(); 9]; 9],
+            solution: vec![vec![String::default(); 9]; 9],
             hints: false,
+            difficulty: Difficulty::default(),
+            display_results: false,
         }
     }
+}
+
+#[derive(serde::Deserialize, serde::Serialize, Default, PartialEq, Clone)]
+enum Difficulty {
+    #[default]
+    Easy = 4,
+    Medium = 5,
+    Hard = 6,
 }
 
 fn is_three(index: usize) -> bool {
@@ -38,19 +52,19 @@ impl SudokuApp {
         Default::default()
     }
 
-    fn build_sudoku(&mut self, ctx: &egui::Context, ui: &mut egui::Ui) {
+    fn display_sudoku(&mut self, ui: &mut egui::Ui) {
         ui.vertical(|ui| {
             ui.add_space(ui.available_height() / 2. - SUDOKU_SIZE / 2.);
 
             ui.horizontal(|ui| {
                 ui.add_space(ui.available_width() / 2. - SUDOKU_SIZE / 2.);
                 ui.group(|ui| {
-                    egui::Grid::new("some_unique_id")
+                    egui::Grid::new("sudoku_display")
                         .min_col_width(0.)
                         .min_row_height(0.)
                         .spacing(vec2(5., 5.))
                         .show(ui, |ui| {
-                            for (row_index, row) in self.sudoku_grid.iter_mut().enumerate() {
+                            for (row_index, row) in self.puzzle.iter_mut().enumerate() {
                                 if is_three(row_index) {
                                     ui.end_row();
                                 }
@@ -61,7 +75,7 @@ impl SudokuApp {
                                     }
 
                                     let text_color = if self.hints {
-                                        if self.sudoku_solution[row_index][column_index] == *value {
+                                        if self.solution[row_index][column_index] == *value {
                                             Color32::GREEN
                                         } else {
                                             Color32::RED
@@ -70,7 +84,8 @@ impl SudokuApp {
                                         Color32::WHITE
                                     };
 
-                                    ui.add(
+                                    ui.add_enabled(
+                                        !self.display_results,
                                         egui::TextEdit::singleline(value)
                                             .min_size(Vec2 { x: 40., y: 40. })
                                             .horizontal_align(egui::Align::Center)
@@ -93,11 +108,165 @@ impl SudokuApp {
                     .num_columns(1)
                     .show(ui, |ui| {
                         ui.centered_and_justified(|ui| {
-                            ui.button("Validate!");
+                            let validate_btn = egui::Button::new("Validate!");
+                            if ui
+                                .add_enabled(!self.display_results, validate_btn)
+                                .clicked()
+                            {
+                                self.display_results = true;
+                            };
+
+                            if self.display_results {
+                                egui::Window::new("Results!")
+                                    .anchor(Align2::CENTER_CENTER, [70., 0.])
+                                    .collapsible(false)
+                                    .resizable(false)
+                                    .show(ui.ctx(), |ui| {
+                                        ui.allocate_space(vec2(200., 0.));
+
+                                        let success = self.puzzle == self.solution;
+
+                                        if success {
+                                            ui.heading("Congrats!");
+                                            ui.label("You've successfully completed the Sudoku!");
+                                        } else {
+                                            ui.heading("It wasn't quite right...");
+                                            ui.label("Try again, or continue?");
+                                        }
+
+                                        ui.add_space(10.);
+                                        ui.horizontal(|ui| {
+                                            if ui.button("Try Again!").clicked() {
+                                                self.create_puzzle();
+                                                self.display_results = false;
+                                            }
+
+                                            if !success {
+                                                if ui.button("Continue!").clicked() {
+                                                    self.display_results = false;
+                                                }
+                                            }
+                                        });
+                                    });
+                            }
                         });
                     });
             });
         });
+    }
+
+    fn try_make_solution(&mut self) -> Result<Vec<Vec<String>>, String> {
+        let mut created_puzzle: Vec<Vec<String>> = vec![vec![String::default(); 9]; 9];
+        let mut created_rows: Vec<HashSet<i8>> =
+            vec![HashSet::from([1, 2, 3, 4, 5, 6, 7, 8, 9]); 9];
+        let mut created_cols: Vec<HashSet<i8>> =
+            vec![HashSet::from([1, 2, 3, 4, 5, 6, 7, 8, 9]); 9];
+        let mut created_squares: Vec<HashSet<i8>> =
+            vec![HashSet::from([1, 2, 3, 4, 5, 6, 7, 8, 9]); 9];
+        let mut rng = rand::thread_rng();
+
+        for row_index in 0..9 {
+            for column_index in 0..9 {
+                // Get the position of the current row & column in the squares
+                let row_square_index = ((row_index / 3) as f32).floor();
+                let col_square_index = ((column_index / 3) as f32).floor();
+                let current_square_index = (row_square_index * 3. + col_square_index) as usize;
+
+                // Get the current row, column and square
+                let current_row: HashSet<i8> = created_rows[row_index].clone();
+                let current_column: HashSet<i8> = created_cols[column_index].clone();
+                let current_square = created_squares[current_square_index].clone();
+
+                // Get the available values for each field
+                // It is no longer an option if it is already in the current row/column/square
+                let options: Vec<i8> = current_row
+                    .clone()
+                    .into_iter()
+                    .filter(|x| current_column.clone().contains(x))
+                    .filter(|x| current_square.clone().contains(x))
+                    .collect();
+
+                // If the puzzle has no possible options, throw an error
+                if options.len() == 0 {
+                    return Err(String::from("Invalid Values"));
+                }
+
+                // Get by index, shrinks every time
+                let random_variation: f32 = rng.gen();
+                let option: i8 = loop {
+                    let option_index = (random_variation * (options.len() as f32)).floor() as usize;
+                    match options.get(option_index) {
+                        Some(option) => break option.to_owned(),
+                        None => {}
+                    }
+                };
+
+                // Set the current field's value
+                created_puzzle[row_index][column_index] = option.to_string();
+
+                // Remove the value as an available option
+                created_cols[column_index].remove(&option);
+                created_rows[row_index].remove(&option);
+                created_squares[current_square_index].remove(&option);
+            }
+        }
+
+        // A successfully generated Sudoku
+        Ok(created_puzzle)
+    }
+
+    fn generate_solution(&mut self) {
+        let solution: Vec<Vec<String>> = loop {
+            if let Ok(solution) = self.try_make_solution() {
+                break solution;
+            }
+        };
+
+        self.solution = solution;
+    }
+
+    fn try_make_puzzle(&mut self, row: &mut Vec<String>) -> Vec<String> {
+        let mut rng = rand::thread_rng();
+        let mut items_removed = 0;
+
+        loop {
+            let random_variation: f32 = rng.gen();
+
+            let index_to_remove = (random_variation * (row.len() as f32)).floor() as usize;
+
+            if row[index_to_remove] == String::default() {
+                continue;
+            }
+
+            row[index_to_remove] = String::default();
+            items_removed += 1;
+
+            if items_removed == self.difficulty.clone() as usize {
+                break;
+            }
+        }
+
+        row.to_vec()
+    }
+
+    fn generate_puzzle(&mut self) {
+        let mut solution = self.solution.clone();
+
+        let puzzle = loop {
+            let mut puzzle: Vec<Vec<String>> = Vec::new();
+            for row in solution.iter_mut() {
+                puzzle.push(self.try_make_puzzle(row));
+            }
+
+            break puzzle;
+        };
+
+        self.puzzle = puzzle;
+    }
+
+    fn create_puzzle(&mut self) {
+        self.generate_solution();
+        self.generate_puzzle();
     }
 }
 
@@ -112,25 +281,54 @@ impl eframe::App for SudokuApp {
             .show(ctx, |ui| {
                 ui.add_space(10.);
 
-                ui.horizontal(|ui| {
-                    ui.label("Enable Hints");
-                    toggle_ui(ui, &mut self.hints);
+                ui.group(|ui| {
+                    ui.horizontal(|ui| {
+                        ui.label("Enable Hints");
+                        toggle_ui(ui, &mut self.hints);
+                    });
                 });
 
-                ui.with_layout(Layout::bottom_up(egui::Align::Min), |ui| {
+                ui.add_space(10.);
+
+                ui.group(|ui| {
+                    ui.label("Difficulty:");
+                    ui.allocate_space(vec2(ui.available_width(), 0.));
+
+                    ui.vertical(|ui| {
+                        if ui
+                            .radio(self.difficulty == Difficulty::Easy, "Easy")
+                            .clicked()
+                        {
+                            self.difficulty = Difficulty::Easy;
+                        };
+
+                        if ui
+                            .radio(self.difficulty == Difficulty::Medium, "Medium")
+                            .clicked()
+                        {
+                            self.difficulty = Difficulty::Medium;
+                        };
+
+                        if ui
+                            .radio(self.difficulty == Difficulty::Hard, "Hard")
+                            .clicked()
+                        {
+                            self.difficulty = Difficulty::Hard;
+                        };
+                    });
+                });
+
+                ui.with_layout(Layout::bottom_up(egui::Align::Center), |ui| {
                     egui::warn_if_debug_build(ui);
                     ui.add_space(10.);
                     if ui.button("Generate Sudoku!").clicked() {
-                        let (puzzle, solution) = create_puzzle();
-
-                        self.sudoku_solution = solution;
-                        self.sudoku_grid = puzzle;
+                        self.create_puzzle();
                     };
                 });
             });
 
         egui::CentralPanel::default().show(ctx, |ui| {
-            self.build_sudoku(ctx, ui);
+            self.display_sudoku(ui);
         });
     }
 }
@@ -158,118 +356,6 @@ fn main() -> eframe::Result {
             Ok(Box::new(SudokuApp::new(cc)))
         }),
     )
-}
-
-fn try_make_solution() -> Result<Vec<Vec<String>>, String> {
-    let mut created_puzzle: Vec<Vec<String>> = vec![vec![String::default(); 9]; 9];
-    let mut created_rows: Vec<HashSet<i8>> = vec![HashSet::from([1, 2, 3, 4, 5, 6, 7, 8, 9]); 9];
-    let mut created_cols: Vec<HashSet<i8>> = vec![HashSet::from([1, 2, 3, 4, 5, 6, 7, 8, 9]); 9];
-    let mut created_squares: Vec<HashSet<i8>> = vec![HashSet::from([1, 2, 3, 4, 5, 6, 7, 8, 9]); 9];
-    let mut rng = rand::thread_rng();
-
-    for row_index in 0..9 {
-        for column_index in 0..9 {
-            // Get the position of the current row & column in the squares
-            let row_square_index = ((row_index / 3) as f32).floor();
-            let col_square_index = ((column_index / 3) as f32).floor();
-            let current_square_index = (row_square_index * 3. + col_square_index) as usize;
-
-            // Get the current row, column and square
-            let current_row: HashSet<i8> = created_rows[row_index].clone();
-            let current_column: HashSet<i8> = created_cols[column_index].clone();
-            let current_square = created_squares[current_square_index].clone();
-
-            // Get the available values for each field
-            // It is no longer an option if it is already in the current row/column/square
-            let options: Vec<i8> = current_row
-                .clone()
-                .into_iter()
-                .filter(|x| current_column.clone().contains(x))
-                .filter(|x| current_square.clone().contains(x))
-                .collect();
-
-            // If the puzzle has no possible options, throw an error
-            if options.len() == 0 {
-                return Err(String::from("Invalid Values"));
-            }
-
-            // Get by index, shrinks every time
-            let random_variation: f32 = rng.gen();
-            let option: i8 = loop {
-                let option_index = (random_variation * (options.len() as f32)).floor() as usize;
-                match options.get(option_index) {
-                    Some(option) => break option.to_owned(),
-                    None => {}
-                }
-            };
-
-            // Set the current field's value
-            created_puzzle[row_index][column_index] = option.to_string();
-
-            // Remove the value as an available option
-            created_cols[column_index].remove(&option);
-            created_rows[row_index].remove(&option);
-            created_squares[current_square_index].remove(&option);
-        }
-    }
-
-    // A successfully generated Sudoku
-    Ok(created_puzzle)
-}
-
-fn generate_solution() -> Vec<Vec<String>> {
-    let solution: Vec<Vec<String>> = loop {
-        if let Ok(solution) = try_make_solution() {
-            break solution;
-        }
-    };
-    solution
-}
-
-fn try_make_puzzle(row: &mut Vec<String>) -> Vec<String> {
-    let mut rng = rand::thread_rng();
-    let mut items_removed = 0;
-
-    loop {
-        let random_variation: f32 = rng.gen();
-
-        let index_to_remove = (random_variation * (row.len() as f32)).floor() as usize;
-
-        if row[index_to_remove] == String::default() {
-            continue;
-        }
-
-        row[index_to_remove] = String::default();
-        items_removed += 1;
-
-        if items_removed == 6 {
-            break;
-        }
-    }
-
-    row.to_vec()
-}
-
-fn generate_puzzle(solution: Vec<Vec<String>>) -> Vec<Vec<String>> {
-    let mut solution = solution;
-
-    let puzzle = loop {
-        let mut puzzle: Vec<Vec<String>> = Vec::new();
-        for row in solution.iter_mut() {
-            puzzle.push(try_make_puzzle(row));
-        }
-
-        break puzzle;
-    };
-
-    puzzle
-}
-
-fn create_puzzle() -> (Vec<Vec<String>>, Vec<Vec<String>>) {
-    let solution = generate_solution();
-    let puzzle = generate_puzzle(solution.clone());
-
-    (puzzle, solution)
 }
 
 pub fn toggle_ui(ui: &mut egui::Ui, on: &mut bool) -> egui::Response {
