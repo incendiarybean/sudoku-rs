@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::{collections::HashSet, sync::Arc};
 
 use egui::{vec2, Color32, Layout, Vec2};
 use rand::Rng;
@@ -107,25 +107,27 @@ impl eframe::App for SudokuApp {
     }
 
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        egui::SidePanel::new(egui::panel::Side::Left, "control_panel").show(ctx, |ui| {
-            ui.add_space(10.);
-
-            ui.horizontal(|ui| {
-                ui.label("Enable Hints");
-                toggle_ui(ui, &mut self.hints);
-            });
-
-            ui.with_layout(Layout::bottom_up(egui::Align::Min), |ui| {
-                egui::warn_if_debug_build(ui);
+        egui::SidePanel::new(egui::panel::Side::Left, "control_panel")
+            .resizable(false)
+            .show(ctx, |ui| {
                 ui.add_space(10.);
-                if ui.button("Generate Sudoku!").clicked() {
-                    let (puzzle, solution) = create_puzzle();
 
-                    self.sudoku_solution = solution;
-                    self.sudoku_grid = puzzle;
-                };
+                ui.horizontal(|ui| {
+                    ui.label("Enable Hints");
+                    toggle_ui(ui, &mut self.hints);
+                });
+
+                ui.with_layout(Layout::bottom_up(egui::Align::Min), |ui| {
+                    egui::warn_if_debug_build(ui);
+                    ui.add_space(10.);
+                    if ui.button("Generate Sudoku!").clicked() {
+                        let (puzzle, solution) = create_puzzle();
+
+                        self.sudoku_solution = solution;
+                        self.sudoku_grid = puzzle;
+                    };
+                });
             });
-        });
 
         egui::CentralPanel::default().show(ctx, |ui| {
             self.build_sudoku(ctx, ui);
@@ -134,16 +136,27 @@ impl eframe::App for SudokuApp {
 }
 
 fn main() -> eframe::Result {
+    let icon: &[u8] = include_bytes!("assets/icon.png");
+    let img: image::DynamicImage = image::load_from_memory(icon).unwrap();
+
     let native_options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
-            .with_inner_size([400.0, 300.0])
-            .with_min_inner_size([SUDOKU_SIZE * 2., SUDOKU_SIZE * 1.2]),
+            .with_inner_size([SUDOKU_SIZE * 1.5, SUDOKU_SIZE * 1.2])
+            .with_min_inner_size([SUDOKU_SIZE * 1.5, SUDOKU_SIZE * 1.2])
+            .with_icon(Arc::new(egui::viewport::IconData {
+                rgba: img.into_bytes(),
+                width: 288,
+                height: 288,
+            })),
         ..Default::default()
     };
     eframe::run_native(
         "Sudoku Generator",
         native_options,
-        Box::new(|cc| Ok(Box::new(SudokuApp::new(cc)))),
+        Box::new(|cc| {
+            egui_extras::install_image_loaders(&cc.egui_ctx);
+            Ok(Box::new(SudokuApp::new(cc)))
+        }),
     )
 }
 
